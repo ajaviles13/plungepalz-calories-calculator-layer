@@ -9,6 +9,7 @@ MALE = dict(
     user_weight="180 lb",
     gender="Male",
     date_of_birth="1986-09-10",
+    is_premium=True,
     as_of=AS_OF,
 )
 FEMALE = dict(
@@ -16,6 +17,7 @@ FEMALE = dict(
     user_weight="140 lb",
     gender="Female",
     date_of_birth="1986-09-10",
+    is_premium=True,
     as_of=AS_OF,
 )
 

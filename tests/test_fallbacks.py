@@ -7,7 +7,8 @@ from plungepalz_calories import (
     estimate_calories,
     fetch_user_profile_fields,
 )
-from plungepalz_calories.constants import MIN_CALORIES, MODEL_VERSION
+from plungepalz_calories.constants import MIN_CALORIES, MODEL_VERSION, NON_PREMIUM_CALORIES
+from plungepalz_calories.model import _resolve_premium
 
 AS_OF = datetime(2026, 9, 10, tzinfo=timezone.utc)
 
@@ -22,6 +23,8 @@ DOCUMENTED_KEYS = {
     "activity_type",
     "model_version",
     "confidence",
+    "is_premium",
+    "premium_gated",
     "fallback_used",
     "flags",
 }
@@ -31,8 +34,28 @@ PROFILE = dict(
     user_weight="180 lb",
     gender="Male",
     date_of_birth="1986-09-10",
+    is_premium=True,
     as_of=AS_OF,
 )
+
+
+def test_not_premium_gate_is_first():
+    result = estimate_calories("Cold Plunge", 50.0, 180.0, **{**PROFILE, "is_premium": False})
+    assert result["calories"] == NON_PREMIUM_CALORIES
+    assert result["fallback_used"] is False
+    assert result["premium_gated"] is True
+    assert "not_premium" in result["flags"]
+
+
+def test_exception_before_premium_resolves(monkeypatch):
+    def boom(_value):
+        raise RuntimeError("resolver failed")
+
+    monkeypatch.setattr("plungepalz_calories.model._resolve_premium", boom)
+    result = estimate_calories("Cold Plunge", 50.0, 180.0, **PROFILE)
+    assert result["calories"] == NON_PREMIUM_CALORIES
+    assert result["fallback_used"] is True
+    assert "exception" in result["flags"]
 
 
 def test_invalid_duration_fallback():
@@ -74,6 +97,7 @@ def test_blank_profile_flags():
         user_weight=None,
         gender="",
         date_of_birth="",
+        is_premium=True,
         as_of=AS_OF,
     )
     assert result["fallback_used"] is False
@@ -151,8 +175,10 @@ def test_fuzz_never_raises():
     genders = [None, "", "Male", "Female", "Other"]
     dobs = [None, "", "1971-06-04", "not-a-date", "3000-01-01"]
     uoms = [None, "Imperial", "Metric", ""]
+    premiums = [True, False, None, "", "true", "false", 0, 1, "no", "premium"]
 
     for i in range(2000):
+        is_premium = rng.choice(premiums)
         result = estimate_calories(
             rng.choice(activities),
             rng.choice(temps),
@@ -162,8 +188,12 @@ def test_fuzz_never_raises():
             gender=rng.choice(genders),
             date_of_birth=rng.choice(dobs),
             unit_of_measure=rng.choice(uoms),
+            is_premium=is_premium,
             as_of=AS_OF,
         )
         assert isinstance(result["calories"], int), i
-        assert 1 <= result["calories"] <= 5000, (i, result["calories"])
         assert DOCUMENTED_KEYS <= set(result.keys()), i
+        if _resolve_premium(is_premium) is True:
+            assert 1 <= result["calories"] <= 5000, (i, result["calories"])
+        else:
+            assert result["calories"] == 0, (i, is_premium, result["calories"])

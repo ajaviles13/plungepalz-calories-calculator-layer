@@ -1,7 +1,8 @@
 """Calorie-burn model for contrast-therapy activities.
 
-Never raises to the caller. Any failure returns DEFAULT_CALORIES with
-fallback_used=True.
+Never raises to the caller. Premium must be positively confirmed or the
+result is calories=0. A confirmed premium user's calculation failure
+returns DEFAULT_CALORIES with fallback_used=True.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ from .constants import (
     COLD_WATER_FLOOR_C,
     CONFIDENCE,
     DEFAULT_CALORIES,
+    NON_PREMIUM_CALORIES,
+    PREMIUM_TRUE_VALUES,
     HEAT_MAX_MULTIPLIER,
     HOT_MAX_MULTIPLIER,
     HOT_SLOPE,
@@ -50,6 +53,8 @@ _RESULT_KEYS = (
     "activity_type",
     "model_version",
     "confidence",
+    "is_premium",
+    "premium_gated",
     "fallback_used",
     "flags",
 )
@@ -85,6 +90,18 @@ def q10_values(t_c: float, minutes: float, steam: bool = False):
     dTc = min(max(dTc, 0.0), Q10_DTC_MAX)
     m = min(1.0 + Q10_PER_DEGREE * dTc, HEAT_MAX_MULTIPLIER)
     return m, dTc
+
+
+def _resolve_premium(value):
+    """Fail-closed premium check. Only an affirmative signal returns True."""
+    try:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() == "true"
+        return value in PREMIUM_TRUE_VALUES
+    except Exception:
+        return False
 
 
 def _to_float(value):
@@ -131,6 +148,8 @@ def _result(
     confidence,
     fallback_used,
     flags,
+    is_premium,
+    premium_gated,
 ):
     return {
         "calories": int(calories),
@@ -143,6 +162,8 @@ def _result(
         "activity_type": activity_type,
         "model_version": MODEL_VERSION,
         "confidence": confidence,
+        "is_premium": bool(is_premium),
+        "premium_gated": bool(premium_gated),
         "fallback_used": bool(fallback_used),
         "flags": list(flags),
     }
@@ -151,6 +172,7 @@ def _result(
 def _fallback_result(
     *,
     flag,
+    calories,
     activity_type=None,
     confidence="unknown",
     minutes=0.0,
@@ -158,6 +180,8 @@ def _fallback_result(
     multiplier=1.0,
     rmr_kcal_min=0.0,
     extra_flags=None,
+    is_premium=False,
+    premium_gated=False,
 ):
     flags = [flag]
     if extra_flags:
@@ -165,8 +189,8 @@ def _fallback_result(
     logger.warning("calorie model fallback: %s", flag)
     _log_flags(flags)
     return _result(
-        calories=DEFAULT_CALORIES,
-        total_kcal=float(DEFAULT_CALORIES),
+        calories=int(calories),
+        total_kcal=float(calories),
         net_kcal=0.0,
         multiplier=multiplier,
         rmr_kcal_min=rmr_kcal_min,
@@ -176,6 +200,29 @@ def _fallback_result(
         confidence=confidence,
         fallback_used=True,
         flags=flags,
+        is_premium=is_premium,
+        premium_gated=premium_gated,
+    )
+
+
+def _gated_result(activity_type=None):
+    flags = ["not_premium"]
+    logger.warning("calorie model fallback: not_premium")
+    _log_flags(flags)
+    return _result(
+        calories=NON_PREMIUM_CALORIES,
+        total_kcal=0.0,
+        net_kcal=0.0,
+        multiplier=0.0,
+        rmr_kcal_min=0.0,
+        minutes=0.0,
+        temp_f_used=None,
+        activity_type=activity_type,
+        confidence="gated",
+        fallback_used=False,
+        flags=flags,
+        is_premium=False,
+        premium_gated=True,
     )
 
 
@@ -188,9 +235,26 @@ def estimate_calories(
     gender=None,
     date_of_birth=None,
     unit_of_measure=None,
+    is_premium=None,
     as_of=None,
 ) -> dict:
     """Estimate total kcal for a contrast-therapy session. Never raises."""
+    premium_confirmed = False
+    try:
+        premium_confirmed = _resolve_premium(is_premium)
+    except Exception:
+        logger.warning("premium resolution failed; treating as not premium", exc_info=True)
+        return _fallback_result(
+            flag="exception",
+            calories=NON_PREMIUM_CALORIES,
+            activity_type=activity_type,
+            is_premium=False,
+            premium_gated=False,
+        )
+
+    if premium_confirmed is not True:
+        return _gated_result(activity_type=activity_type)
+
     try:
         flags = []
 
@@ -209,9 +273,12 @@ def estimate_calories(
         if duration is None or duration <= 0:
             return _fallback_result(
                 flag="invalid_duration",
+                calories=DEFAULT_CALORIES,
                 activity_type=activity_name,
                 confidence=confidence,
                 extra_flags=[f for f in flags if f != "invalid_duration"],
+                is_premium=True,
+                premium_gated=False,
             )
 
         ceiling = MAX_DURATION_SECONDS.get(activity_name, _UNKNOWN_DURATION_CEILING)
@@ -295,7 +362,15 @@ def estimate_calories(
             confidence=confidence,
             fallback_used=False,
             flags=flags,
+            is_premium=True,
+            premium_gated=False,
         )
     except Exception:
         logger.warning("calorie model exception; returning default", exc_info=True)
-        return _fallback_result(flag="exception", activity_type=activity_type)
+        return _fallback_result(
+            flag="exception",
+            calories=DEFAULT_CALORIES if premium_confirmed else NON_PREMIUM_CALORIES,
+            activity_type=activity_type,
+            is_premium=premium_confirmed,
+            premium_gated=False,
+        )

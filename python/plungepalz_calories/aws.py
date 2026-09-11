@@ -18,6 +18,7 @@ _PROFILE_ALIASES = {
     "#g": "gender",
     "#dob": "dateOfBirth",
     "#uom": "unitOfMeasure",
+    "#prem": "isPremium",
 }
 _PROFILE_KEYS = tuple(_PROFILE_ALIASES.values())
 
@@ -44,7 +45,7 @@ def fetch_user_profile_fields(account_id, table_name="UserData_PlungePals") -> d
         response = table.query(
             IndexName="accountId-index",
             KeyConditionExpression=Key("accountId").eq(account_id),
-            ProjectionExpression="#uh, #uw, #g, #dob, #uom",
+            ProjectionExpression="#uh, #uw, #g, #dob, #uom, #prem",
             ExpressionAttributeNames=dict(_PROFILE_ALIASES),
             Limit=1,
         )

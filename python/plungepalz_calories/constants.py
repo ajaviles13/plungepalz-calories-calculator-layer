@@ -1,6 +1,10 @@
 MODEL_VERSION = "1.0.0"
-DEFAULT_CALORIES = 15          # returned whenever the model cannot produce a value
-MIN_CALORIES = 1               # floor for any session with duration > 0
+DEFAULT_CALORIES = 15          # returned when a PREMIUM user's calculation fails
+NON_PREMIUM_CALORIES = 0       # returned whenever premium cannot be positively confirmed
+MIN_CALORIES = 1               # floor for any premium session with duration > 0
+
+# Values accepted as an affirmative premium signal. Anything else -> not premium.
+PREMIUM_TRUE_VALUES = (True, "true", "True", "TRUE", 1, "1")
 
 # --- Anthropometric defaults (used when the user's profile field is blank/garbage) ---
 DEFAULT_HEIGHT_STRING = "5'11\""     # 180.34 cm

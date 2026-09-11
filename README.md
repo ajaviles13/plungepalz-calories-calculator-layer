@@ -157,12 +157,36 @@ bounce. The layer needs no loop protection of its own — do **not** add
 not a recalculation trigger. The multiplier family for a given record never
 changes after the first calculation.
 
-### Zero is a real write
+### Device-value preservation (dispatcher policy, not layer logic)
 
-Non-premium returns a real `0`, not a failure. The dispatcher distinguishes
-`None` (calculation could not be attempted, skip the write) from `0`
-(premium gate, write it). `estimate_calories()` always returns a dict —
-never `None`.
+`estimate_calories()` always returns a dict — never `None`. Non-premium
+returns a real `0` with `premium_gated = True`. The dispatcher distinguishes
+`None` (calculation could not be attempted, skip the write) from `0`, and
+then decides whether that 0 gets written:
+
+| Premium | Existing `calories` on record | Action |
+|---|---|---|
+| Yes | anything | write the computed value (skip if identical) |
+| No | absent or `0` | write `0` |
+| No | non-zero | **preserve it — no write** |
+
+The reason is that a non-premium user recording on a Garmin watch already
+has a real number on the record: the Connect IQ app writes Garmin's own
+calorie estimate. Zeroing it would destroy data the user legitimately has,
+and the app surfaces it as a synced watch value rather than a PlungePalz
+estimate.
+
+This rule lives in the dispatcher, deliberately not in the layer.
+`estimate_calories()` stays a pure function of its declared inputs, with no
+"what is already stored" parameter and no knowledge of DynamoDB. The
+layer's only obligation is to report `premium_gated` truthfully on **every**
+result — computed, gated, invalid-duration, and exception. A missing or
+absent key would silently overwrite real device data with 0.
+
+Side effect: a **lapsed** premium user keeps the model-calculated value
+already on their record instead of having it zeroed on their next edit.
+Intended — the feature stops producing new numbers; it does not
+retroactively delete old ones.
 
 `isPremium` is read live at calculation time, so an edited session reflects
 the user's status at edit time rather than at record creation. Subscription

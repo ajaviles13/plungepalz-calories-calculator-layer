@@ -56,6 +56,8 @@ def test_exception_before_premium_resolves(monkeypatch):
     assert result["calories"] == NON_PREMIUM_CALORIES
     assert result["fallback_used"] is True
     assert "exception" in result["flags"]
+    assert "premium_gated" in result
+    assert result["premium_gated"] is False
 
 
 def test_invalid_duration_fallback():
@@ -64,12 +66,16 @@ def test_invalid_duration_fallback():
         assert result["calories"] == DEFAULT_CALORIES
         assert result["fallback_used"] is True
         assert "invalid_duration" in result["flags"]
+        assert "premium_gated" in result
+        assert result["premium_gated"] is False
 
 
 def test_unknown_activity_type_is_pure_rmr():
     result = estimate_calories("Ice Bath", 50.0, 180.0, **PROFILE)
     assert result["fallback_used"] is False
     assert "unknown_activity_type" in result["flags"]
+    assert "premium_gated" in result
+    assert result["premium_gated"] is False
     assert result["multiplier"] == 1.0
     assert result["confidence"] == "unknown"
     expected_total = result["rmr_kcal_min"] * result["minutes"]
@@ -82,10 +88,13 @@ def test_temp_defaulted():
     assert result["fallback_used"] is False
     assert "temp_defaulted" in result["flags"]
     assert result["temp_f_used"] == 50.0
+    assert "premium_gated" in result
+    assert result["premium_gated"] is False
 
     result = estimate_calories("Cold Plunge", 200.0, 180.0, **PROFILE)
     assert "temp_defaulted" in result["flags"]
     assert result["temp_f_used"] == 50.0
+    assert result["premium_gated"] is False
 
 
 def test_blank_profile_flags():
@@ -105,6 +114,8 @@ def test_blank_profile_flags():
     assert "default_weight" in result["flags"]
     assert "default_age" in result["flags"]
     assert "default_sex" in result["flags"]
+    assert "premium_gated" in result
+    assert result["premium_gated"] is False
 
 
 def test_min_floor_applied():
@@ -112,6 +123,8 @@ def test_min_floor_applied():
     assert result["calories"] == MIN_CALORIES
     assert result["fallback_used"] is False
     assert "min_floor_applied" in result["flags"]
+    assert "premium_gated" in result
+    assert result["premium_gated"] is False
 
 
 def test_duration_coercion_agreement():
@@ -151,6 +164,8 @@ def test_exception_does_not_propagate(monkeypatch):
     assert result["fallback_used"] is True
     assert "exception" in result["flags"]
     assert result["model_version"] == MODEL_VERSION
+    assert "premium_gated" in result
+    assert result["premium_gated"] is False
 
 
 def test_fetch_user_profile_fields_without_boto3():

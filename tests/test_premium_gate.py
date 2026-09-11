@@ -35,6 +35,7 @@ def test_true_and_string_true_compute():
             is_premium=value,
             **PREMIUM_INPUTS,
         )
+        assert "premium_gated" in result
         assert result["premium_gated"] is False
         assert result["is_premium"] is True
         assert result["calories"] > 0
@@ -53,6 +54,7 @@ def test_non_premium_values_are_gated():
             **PREMIUM_INPUTS,
         )
         assert result["calories"] == 0, value
+        assert "premium_gated" in result, value
         assert result["premium_gated"] is True, value
         assert result["confidence"] == "gated", value
         assert result["flags"] == ["not_premium"], value
@@ -108,6 +110,8 @@ def test_min_calories_does_not_lift_gated_zero():
         **PREMIUM_INPUTS,
     )
     assert premium["calories"] >= 30
+    assert "premium_gated" in premium
+    assert premium["premium_gated"] is False
 
 
 def test_profile_exception_is_fail_closed(monkeypatch):
@@ -126,6 +130,8 @@ def test_profile_exception_is_fail_closed(monkeypatch):
     assert premium["calories"] == DEFAULT_CALORIES
     assert premium["fallback_used"] is True
     assert "exception" in premium["flags"]
+    assert "premium_gated" in premium
+    assert premium["premium_gated"] is False
 
     for value in (False, None):
         gated = estimate_calories(
@@ -137,6 +143,8 @@ def test_profile_exception_is_fail_closed(monkeypatch):
         )
         assert gated["calories"] == NON_PREMIUM_CALORIES, value
         assert gated["calories"] != DEFAULT_CALORIES, value
+        assert "premium_gated" in gated, value
+        assert gated["premium_gated"] is True, value
 
 
 def test_resolve_premium_raise_returns_zero_not_fifteen(monkeypatch):
@@ -153,3 +161,20 @@ def test_resolve_premium_raise_returns_zero_not_fifteen(monkeypatch):
     )
     assert result["calories"] == 0
     assert result["calories"] != DEFAULT_CALORIES
+    assert "premium_gated" in result
+    assert result["premium_gated"] is False
+
+
+def test_premium_gated_on_invalid_duration_fallback():
+    for duration in (0, None):
+        result = estimate_calories(
+            "Cold Plunge",
+            50.0,
+            duration,
+            is_premium=True,
+            **PREMIUM_INPUTS,
+        )
+        assert "premium_gated" in result, duration
+        assert result["premium_gated"] is False, duration
+        assert result["fallback_used"] is True, duration
+        assert "invalid_duration" in result["flags"], duration

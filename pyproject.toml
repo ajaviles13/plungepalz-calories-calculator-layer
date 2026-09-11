@@ -1,0 +1,13 @@
+[project]
+name = "plungepalz-calories"
+version = "1.0.0"
+description = "PlungePalz contrast-therapy calorie estimator (AWS Lambda layer)"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["tests"]

@@ -96,7 +96,7 @@ python -m pytest tests/ -q
 ```
 
 The zip contains `python/plungepalz_calories/*.py` and nothing else. Attach it
-to the four PlungePalz Lambdas as a layer.
+only to `SessionRecorded_DispatcherLambda`.
 
 ## Premium gate (fail-closed)
 
@@ -111,162 +111,104 @@ confirmed. A failed DynamoDB lookup, a missing `isPremium` attribute, or an
 exception thrown before premium resolves yields 0, never 15. `MIN_CALORIES`
 does not lift a gated 0 to 1.
 
-Every call site must pass `isPremium` through. If it is omitted the layer
-treats the user as non-premium and writes 0 — fail-safe, but it silently
-disables the feature, so check that parameter first when debugging an
-unexpected zero.
+The dispatcher must pass `isPremium` through. If it is omitted the layer treats
+the user as non-premium and writes 0 — fail-safe, but it silently disables the
+feature, so check that parameter first when debugging an unexpected zero.
 
-## Integration (do not call `fetch_user_profile_fields` on the write path)
+## Integration (one call site)
 
-All three write-path Lambdas already query `accountId-index` on
-`UserData_PlungePals`. Extend the existing `ProjectionExpression` — **zero
-additional DynamoDB reads**. Only the dispatcher recalculation path should call
-`fetch_user_profile_fields`.
+**There is exactly one call site: `SessionRecorded_DispatcherLambda`.** Do not
+attach this layer to `saveOrEditSessionInAWS`, `SmartWatchActivitySaved_AppleWatch`,
+or `SmartWatchActivitySaved_Garmin`. Those three write the activity record; the
+DynamoDB stream on `ActivitiesRecorded` then drives calorie estimation from a
+single place, covering the mobile app, both watches, and the watch fail-safe
+save paths uniformly.
 
-### `SmartWatchActivitySaved_Garmin`
+Do not modify those writer Lambdas except as noted below.
 
-Extend `get_user_data()`'s projection from
-`'avatar, verified, trophyImage, isAccountPublic'` to also include
-`userHeight, userWeight, gender, dateOfBirth, unitOfMeasure, isPremium`, then
-replace `'calories': activity_calories` in the item dict with the model result.
-The Garmin device value (`body['ActivityCalories']`) is discarded; optionally
-keep it as a separate `calories_device` attribute for comparison.
+### Hot path
 
-Both watch Lambdas' `get_user_data()` return a hardcoded default dict on lookup
-failure. Add `'isPremium': False` to **every** return branch in those helpers,
-including the exception branch — the existing pattern defaults `isAccountPublic`
-to `True`, and copying that habit for `isPremium` would open the feature up on
-a failed read.
+`fetch_user_profile_fields()` runs on **every INSERT**. The dispatcher has no
+pre-existing user query. `UserData_PlungePals` is **provisioned at 10 RCU**
+(autoscaling 1–10), not on-demand.
 
-```python
-from plungepalz_calories import estimate_calories
+- Keep the `ProjectionExpression` minimal (`userHeight`, `userWeight`,
+  `gender`, `dateOfBirth`, `unitOfMeasure`, `isPremium`).
+- Reuse the module-level `boto3.resource("dynamodb")` handle across warm
+  invocations.
+- Do not add a retry loop. A failed lookup returns `{}`, which the premium
+  gate reads as not-premium and resolves to 0.
 
-# ProjectionExpression becomes:
-# 'avatar, verified, trophyImage, isAccountPublic, userHeight, userWeight, gender, dateOfBirth, unitOfMeasure, isPremium'
+### Stream values are strings
 
-result = estimate_calories(
-    activity_type=activity_type,
-    temp_f=avg_temp,
-    duration_seconds=s_length,
-    user_height=user_data.get("userHeight"),
-    user_weight=user_data.get("userWeight"),
-    gender=user_data.get("gender"),
-    date_of_birth=user_data.get("dateOfBirth"),
-    unit_of_measure=user_data.get("unitOfMeasure"),
-    is_premium=user_data.get("isPremium"),
-)
-item["calories"] = result["calories"]
-item["calories_device"] = body.get("ActivityCalories")  # optional
-```
+`get_stream_value()` returns DynamoDB `N` values as strings, so `temp_f`
+arrives as `"45.0"` and `duration_seconds` as `"78"`. The coercion helpers
+accept `str` first-class; this is the normal path, not an edge case.
 
-### `SmartWatchActivitySaved_AppleWatch`
+### Recalculation contract
 
-Same projection change to its `get_user_data()`. Note that
-`calories = body.get('calories', 15)` at line ~410 is currently parsed and then
-never written to the item; replace it with the model result and add `calories`
-to the item dict. The watch payload's own `calories` value must not be used as
-a fallback — a non-premium user would otherwise receive 15 from the client
-default.
+The dispatcher recalculates only when `avg_temp` or `s_length` changes. It
+writes only the `calories` attribute, so the resulting MODIFY shows both
+inputs unchanged and does not recalculate. The loop terminates after one
+bounce. The layer needs no loop protection of its own — do **not** add
+`calories` to the recalculation trigger set.
 
-```python
-from plungepalz_calories import estimate_calories
+`activityType` is fixed at record creation and is never editable, so it is
+not a recalculation trigger. The multiplier family for a given record never
+changes after the first calculation.
 
-result = estimate_calories(
-    activity_type=activity_type,
-    temp_f=avg_temp,
-    duration_seconds=s_length,
-    user_height=user_data.get("userHeight"),
-    user_weight=user_data.get("userWeight"),
-    gender=user_data.get("gender"),
-    date_of_birth=user_data.get("dateOfBirth"),
-    unit_of_measure=user_data.get("unitOfMeasure"),
-    is_premium=user_data.get("isPremium"),
-)
-item["calories"] = result["calories"]
-```
+### Zero is a real write
 
-### `saveOrEditSessionInAWS`
+Non-premium returns a real `0`, not a failure. The dispatcher distinguishes
+`None` (calculation could not be attempted, skip the write) from `0`
+(premium gate, write it). `estimate_calories()` always returns a dict —
+never `None`.
 
-Extend the projection inside `enhance_payload_with_user_data()`, then set
-`payload["calories"]` before `create_record()`. This runs on the `CREATE`
-branch only.
+`isPremium` is read live at calculation time, so an edited session reflects
+the user's status at edit time rather than at record creation. Subscription
+changes alone do not recalculate past records, since `UserData_PlungePals`
+has its own stream that nothing here consumes. Intended behavior given there
+is no backfill.
 
-```python
-from plungepalz_calories import estimate_calories
-
-# Inside enhance_payload_with_user_data(), after the user-data query:
-result = estimate_calories(
-    activity_type=payload.get("activityType"),
-    temp_f=payload.get("avg_temp"),
-    duration_seconds=payload.get("s_length"),
-    user_height=user_data.get("userHeight"),
-    user_weight=user_data.get("userWeight"),
-    gender=user_data.get("gender"),
-    date_of_birth=user_data.get("dateOfBirth"),
-    unit_of_measure=user_data.get("unitOfMeasure"),
-    is_premium=user_data.get("isPremium"),
-)
-payload["calories"] = result["calories"]
-```
-
-### `SessionRecorded_DispatcherLambda`
-
-Handles recalculation on edit. In the `MODIFY` branch, compare `avg_temp`,
-`s_length`, and `activityType` between `OldImage` and `NewImage` using the
-existing `get_stream_value()` helper. If any of the three changed, call
-`fetch_user_profile_fields(userAccountId)`, recompute, and `update_item` on
-`ActivitiesRecorded` setting only `calories`.
-
-Two things to get right:
-
-- `ActivitiesRecorded` has a **composite key** — the update needs
-  `Key={"ActivityID": ..., "timestamp": ...}`, both available from
-  `record['dynamodb']['Keys']`.
-- The write triggers another `MODIFY` event. That second pass sees `avg_temp`,
-  `s_length`, and `activityType` unchanged, so it does not recalculate and the
-  loop terminates naturally. Do **not** add a recalculation trigger on the
-  `calories` attribute itself.
-- `fetch_user_profile_fields()` reads `isPremium` live, so the recalculation
-  reflects the user's status **at edit time**, not at record creation. A user
-  who lapsed will see an edited session drop to 0; a user who upgraded will
-  see it populate. Subscription changes alone do not trigger recalculation of
-  past records, since `UserData_PlungePals` is a different table with its own
-  stream. That is the intended behavior given there is no backfill.
+### Dispatcher call shape
 
 ```python
 from plungepalz_calories import estimate_calories, fetch_user_profile_fields
 
-if event_name == "MODIFY":
-    old_temp = get_stream_value(old_image, "avg_temp")
-    new_temp = get_stream_value(new_image, "avg_temp")
-    old_len = get_stream_value(old_image, "s_length")
-    new_len = get_stream_value(new_image, "s_length")
-    old_type = get_stream_value(old_image, "activityType")
-    new_type = get_stream_value(new_image, "activityType")
+profile = fetch_user_profile_fields(user_account_id)   # {} on failure -> gate resolves to 0
 
-    if (old_temp, old_len, old_type) != (new_temp, new_len, new_type):
-        profile = fetch_user_profile_fields(user_account_id)
-        result = estimate_calories(
-            activity_type=new_type,
-            temp_f=new_temp,
-            duration_seconds=new_len,
-            user_height=profile.get("userHeight"),
-            user_weight=profile.get("userWeight"),
-            gender=profile.get("gender"),
-            date_of_birth=profile.get("dateOfBirth"),
-            unit_of_measure=profile.get("unitOfMeasure"),
-            is_premium=profile.get("isPremium"),
-        )
-        keys = record["dynamodb"]["Keys"]
-        table.update_item(
-            Key={
-                "ActivityID": keys["ActivityID"]["S"],
-                "timestamp": keys["timestamp"]["S"],
-            },
-            UpdateExpression="SET calories = :c",
-            ExpressionAttributeValues={":c": result["calories"]},
-        )
+result = estimate_calories(
+    activity_type=get_stream_value(new_image, "activityType"),
+    temp_f=get_stream_value(new_image, "avg_temp"),
+    duration_seconds=get_stream_value(new_image, "s_length"),
+    user_height=profile.get("userHeight"),
+    user_weight=profile.get("userWeight"),
+    gender=profile.get("gender"),
+    date_of_birth=profile.get("dateOfBirth"),
+    unit_of_measure=profile.get("unitOfMeasure"),
+    is_premium=profile.get("isPremium"),
+)
+calories = int(result["calories"])
 ```
+
+The write uses the composite key — `ActivitiesRecorded` is partitioned on
+`ActivityID` and sorted on `timestamp`, and both are present in
+`record["dynamodb"]["Keys"]`:
+
+```python
+table.update_item(
+    Key={"ActivityID": keys["ActivityID"]["S"], "timestamp": keys["timestamp"]["S"]},
+    UpdateExpression="SET #cal = :cal",
+    ExpressionAttributeNames={"#cal": "calories"},
+    ExpressionAttributeValues={":cal": calories},
+)
+```
+
+On INSERT the record exists briefly without the final calorie value.
+`SmartWatchActivitySaved_Garmin` currently writes `'calories': activity_calories`
+(the watch's own estimate, e.g. `2`), which would visibly flip to the model
+value a beat later. Remove that line from the Garmin item dict so the
+attribute is simply absent until the dispatcher populates it.
 
 ## Coefficient table
 

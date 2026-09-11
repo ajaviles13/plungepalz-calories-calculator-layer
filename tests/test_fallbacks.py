@@ -115,6 +115,7 @@ def test_min_floor_applied():
 
 
 def test_duration_coercion_agreement():
+    # "97" is the production path: DynamoDB stream N values arrive as strings.
     results = [
         estimate_calories("Sauna", 180.0, duration, **PROFILE)
         for duration in ("97", 97, 97.0, Decimal("97"))
@@ -126,6 +127,7 @@ def test_duration_coercion_agreement():
 
 
 def test_temp_coercion_agreement():
+    # "45.0" is the production path: DynamoDB stream N values arrive as strings.
     results = [
         estimate_calories("Cold Plunge", temp, 78.0, **PROFILE)
         for temp in ("45.0", 45, Decimal("45.0"))

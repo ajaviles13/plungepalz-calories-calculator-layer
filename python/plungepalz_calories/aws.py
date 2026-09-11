@@ -1,4 +1,9 @@
-"""Optional DynamoDB profile fetch for the dispatcher recalculation path.
+"""Hot-path DynamoDB profile fetch for SessionRecorded_DispatcherLambda.
+
+This is the layer's only call site and it has no pre-existing user query, so
+``fetch_user_profile_fields`` runs on every INSERT. Keep the projection
+minimal, cache the resource handle, and never retry: ``{}`` is fail-closed
+(the premium gate reads a missing ``isPremium`` as not-premium and returns 0).
 
 boto3 is imported lazily inside function bodies so the rest of the package
 stays importable in a bare test environment with no AWS credentials.
@@ -26,8 +31,9 @@ _PROFILE_KEYS = tuple(_PROFILE_ALIASES.values())
 def fetch_user_profile_fields(account_id, table_name="UserData_PlungePals") -> dict:
     """Query ``accountId-index`` for the fields the calorie model needs.
 
-    Returns ``{}`` on any error or empty result. Never raises. Caches the
-    DynamoDB resource handle on first use so warm Lambda invocations reuse it.
+    Returns ``{}`` on any error or empty result — no retry. Never raises.
+    Caches the DynamoDB resource handle on first use so warm invocations reuse
+    it against the provisioned 10 RCU table.
     """
     global _dynamodb
     try:

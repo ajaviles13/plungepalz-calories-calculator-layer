@@ -49,7 +49,7 @@ def test_mobile_sample_3_sauna():
 
 
 def test_twenty_minute_sauna_regression_guard():
-    result = estimate_calories("Sauna", 180.0, 20 * 60, **PROFILE)
+    result = estimate_calories("Sauna", "180.0", "1200", **PROFILE)
     assert result["calories"] == 23
     assert abs(result["total_kcal"] - 23.06) < 0.2
     assert result["net_kcal"] < 2.5
